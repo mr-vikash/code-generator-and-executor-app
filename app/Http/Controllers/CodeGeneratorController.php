@@ -3,6 +3,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CodeHistory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -21,13 +22,116 @@ class CodeGeneratorController extends Controller
             $claudeResponse = $this->callClaudeAPI($prompt);
             $codeData = $this->extractCode($claudeResponse);
 
+            // Save to history
+            $history = CodeHistory::create([
+                'prompt' => $prompt,
+                'code' => $codeData['code'],
+                'type' => $codeData['type'],
+                'description' => $codeData['description'],
+                'libraries' => json_encode($codeData['libraries']),
+            ]);
+
             return response()->json([
                 'success' => true,
-                'data' => $codeData
+                'data' => array_merge($codeData, ['id' => $history->id])
             ]);
         } catch (\Exception $e) {
             Log::error('Code generation failed: ' . $e->getMessage());
             
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function generateStream(Request $request)
+    {
+        $request->validate([
+            'prompt' => 'required|string|max:2000'
+        ]);
+
+        $prompt = $request->input('prompt');
+
+        return response()->stream(function () use ($prompt) {
+            try {
+                $apiKey = env('ANTHROPIC_API_KEY');
+                
+                if (empty($apiKey)) {
+                    echo "data: " . json_encode(['error' => 'ANTHROPIC_API_KEY not set']) . "\n\n";
+                    return;
+                }
+
+                $systemPrompt = $this->getSystemPrompt();
+
+                $ch = curl_init('https://api.anthropic.com/v1/messages');
+                
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => false,
+                    CURLOPT_POST => true,
+                    CURLOPT_HTTPHEADER => [
+                        'x-api-key: ' . $apiKey,
+                        'anthropic-version: 2023-06-01',
+                        'content-type: application/json',
+                    ],
+                    CURLOPT_POSTFIELDS => json_encode([
+                        'model' => 'claude-sonnet-4-5-20250929',
+                        'max_tokens' => 4096,
+                        'stream' => true,
+                        'system' => $systemPrompt,
+                        'messages' => [
+                            [
+                                'role' => 'user',
+                                'content' => $prompt
+                            ]
+                        ]
+                    ]),
+                    CURLOPT_WRITEFUNCTION => function($curl, $data) {
+                        echo $data;
+                        ob_flush();
+                        flush();
+                        return strlen($data);
+                    }
+                ]);
+
+                curl_exec($ch);
+                curl_close($ch);
+
+            } catch (\Exception $e) {
+                echo "data: " . json_encode(['error' => $e->getMessage()]) . "\n\n";
+                ob_flush();
+                flush();
+            }
+        }, 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache',
+            'X-Accel-Buffering' => 'no',
+        ]);
+    }
+
+    public function saveFromStream(Request $request)
+    {
+        $request->validate([
+            'prompt' => 'required|string',
+            'code' => 'required|string',
+            'type' => 'required|string',
+            'description' => 'nullable|string',
+        ]);
+
+        try {
+            $history = CodeHistory::create([
+                'prompt' => $request->prompt,
+                'code' => $request->code,
+                'type' => $request->type,
+                'description' => $request->description ?? 'Generated code',
+                'libraries' => json_encode([]),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'id' => $history->id
+            ]);
+        } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage()
