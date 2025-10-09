@@ -58,6 +58,16 @@
                         <option value="vue">Vue</option>
                     </select>
 
+                    <button @click="showUploadModal = true"
+                        class="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12">
+                            </path>
+                        </svg>
+                        Upload
+                    </button>
+
                     <button @click="downloadProject"
                         class="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -147,8 +157,50 @@
 
             {{-- Info Bar --}}
             <div class="p-3 bg-gray-800 border-t border-gray-700 text-xs text-gray-400">
-                <p>💡 Press Ctrl+Enter to run | Describe your app and click "Generate with AI" | Download complete React
-                    project with all dependencies</p>
+                <p>💡 Press Ctrl+Enter to run | Describe your app and click "Generate with AI" | Upload projects or Git
+                    repos | Download complete React project</p>
+            </div>
+        </div>
+
+        {{-- Upload Modal --}}
+        <div x-show="showUploadModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+            @click.self="showUploadModal = false">
+            <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4" @click.stop>
+                <h2 class="text-xl font-bold mb-4">Upload Project</h2>
+
+                <div class="space-y-4">
+                    {{-- Upload ZIP File --}}
+                    <div>
+                        <label class="block text-sm font-semibold mb-2">Upload ZIP File</label>
+                        <input type="file" accept=".zip" @change="handleFileUpload"
+                            class="w-full px-3 py-2 bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-xs text-gray-400 mt-1">Upload a ZIP file containing your project</p>
+                    </div>
+
+                    {{-- Git Repository URL --}}
+                    <div>
+                        <label class="block text-sm font-semibold mb-2">Or Enter Git Repository URL</label>
+                        <input type="text" x-model="gitRepoUrl" placeholder="https://github.com/user/repo"
+                            class="w-full px-3 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-xs text-gray-400 mt-1">Enter a public Git repository URL</p>
+                    </div>
+
+                    <div x-show="uploadError" class="text-red-400 text-sm" x-text="uploadError"></div>
+                    <div x-show="uploadProgress" class="text-blue-400 text-sm">
+                        <span class="inline-block animate-pulse">●</span> <span x-text="uploadProgress"></span>
+                    </div>
+                </div>
+
+                <div class="flex gap-2 mt-6">
+                    <button @click="uploadGitRepo" :disabled="uploading || !gitRepoUrl"
+                        class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50">
+                        Download Git Repo
+                    </button>
+                    <button @click="showUploadModal = false"
+                        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors">
+                        Cancel
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -194,6 +246,11 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                 history: [],
                 streamingProgress: false,
                 currentHistoryId: null,
+                showUploadModal: false,
+                gitRepoUrl: '',
+                uploading: false,
+                uploadError: '',
+                uploadProgress: '',
 
                 init() {
                     this.loadHistoryList();
@@ -204,7 +261,7 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                         const response = await fetch('{{ route('code-history.index') }}');
                         const data = await response.json();
                         if (data.success) {
-                            this.history = data.data.data; // Pagination wrapper
+                            this.history = data.data.data;
                         }
                     } catch (err) {
                         console.error('Failed to load history:', err);
@@ -255,6 +312,95 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                     });
                 },
 
+                async handleFileUpload(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+
+                    this.uploading = true;
+                    this.uploadError = '';
+                    this.uploadProgress = 'Uploading and extracting project...';
+
+                    try {
+                        const formData = new FormData();
+                        formData.append('project', file);
+
+                        const response = await fetch('{{ route('code-executor.upload-project') }}', {
+                            method: 'POST',
+                            headers: {
+                                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                            },
+                            body: formData
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            this.$refs.outputFrame.srcdoc = data.html;
+                            this.showUploadModal = false;
+                            this.uploadProgress = '';
+                        } else {
+                            this.uploadError = data.message || 'Upload failed';
+                        }
+                    } catch (err) {
+                        this.uploadError = 'Upload error: ' + err.message;
+                    } finally {
+                        this.uploading = false;
+                        this.uploadProgress = '';
+                    }
+                },
+
+                async uploadGitRepo() {
+                    if (!this.gitRepoUrl.trim()) {
+                        this.uploadError = 'Please enter a Git repository URL';
+                        return;
+                    }
+
+                    this.uploading = true;
+                    this.uploadError = '';
+                    this.uploadProgress = 'Cloning repository...';
+
+                    try {
+                        const response = await fetch('{{ route('code-executor.upload-git') }}', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                            },
+                            body: JSON.stringify({
+                                repo_url: this.gitRepoUrl
+                            })
+                        });
+
+                        if (response.ok) {
+                            const blob = await response.blob();
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+
+                            // Extract repo name from URL
+                            const repoName = this.gitRepoUrl.split('/').pop().replace('.git', '');
+                            a.download = `${repoName}.zip`;
+
+                            document.body.appendChild(a);
+                            a.click();
+                            window.URL.revokeObjectURL(url);
+                            document.body.removeChild(a);
+
+                            this.showUploadModal = false;
+                            this.gitRepoUrl = '';
+                            this.uploadProgress = '';
+                        } else {
+                            const data = await response.json();
+                            this.uploadError = data.message || 'Failed to download repository';
+                        }
+                    } catch (err) {
+                        this.uploadError = 'Error: ' + err.message;
+                    } finally {
+                        this.uploading = false;
+                        this.uploadProgress = '';
+                    }
+                },
+
                 async generateCodeStream() {
                     if (!this.aiPrompt.trim()) {
                         this.generationError = 'Please enter a description';
@@ -264,7 +410,7 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                     this.generating = true;
                     this.streamingProgress = true;
                     this.generationError = '';
-                    this.code = ''; // Clear existing code
+                    this.code = '';
 
                     try {
                         const response = await fetch(
@@ -304,17 +450,13 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                                         }
 
                                         if (data.type === 'message_stop') {
-                                            // Parse the complete response
                                             const codeData = this.parseStreamedCode(fullResponse);
                                             if (codeData) {
                                                 this.code = codeData.code;
                                                 this.codeType = codeData.type;
                                                 this.codeDescription = codeData.description;
 
-                                                // Save to history
                                                 await this.saveStreamedCode(codeData);
-
-                                                // Auto-execute
                                                 setTimeout(() => this.executeCode(), 500);
                                             }
                                         }
@@ -334,7 +476,6 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
 
                 parseStreamedCode(text) {
                     try {
-                        // Try to extract JSON from the response
                         const jsonMatch = text.match(/\{[\s\S]*"code"[\s\S]*\}/);
                         if (jsonMatch) {
                             const parsed = JSON.parse(jsonMatch[0]);

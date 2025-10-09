@@ -11,9 +11,7 @@ class CodeExecutorController extends Controller
 {
     public function index()
     {
-
-            return view('code-executor.index');
-
+        return view('code-executor.index');
     }
 
     public function execute(Request $request)
@@ -82,18 +80,153 @@ class CodeExecutorController extends Controller
         $repoUrl = $request->input('repo_url');
 
         try {
-            // For now, we'll just return a message
-            // Full implementation would require server-side git clone
-            return response()->json([
-                'success' => false,
-                'message' => 'Git repository preview is under development. Please download and run locally for now.'
-            ], 501);
+            // Sanitize repo URL
+            $repoUrl = trim($repoUrl);
+            
+            // Extract repo name from URL
+            preg_match('/\/([^\/]+?)(?:\.git)?$/', $repoUrl, $matches);
+            $repoName = $matches[1] ?? 'repo';
+            $repoName = preg_replace('/[^a-zA-Z0-9-_]/', '', $repoName);
+            
+            $tempDir = storage_path('app/temp/git_' . $repoName . '_' . time());
+            
+            // Clone the repository
+            $command = "git clone --depth 1 " . escapeshellarg($repoUrl) . " " . escapeshellarg($tempDir) . " 2>&1";
+            exec($command, $output, $returnCode);
+            
+            if ($returnCode !== 0) {
+                throw new \Exception('Failed to clone repository: ' . implode("\n", $output));
+            }
+
+            // Remove .git directory
+            $this->deleteDirectory($tempDir . '/.git');
+
+            // Create ZIP file
+            $zipPath = storage_path('app/temp/' . $repoName . '.zip');
+            $zip = new ZipArchive();
+            
+            if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) === TRUE) {
+                $files = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($tempDir),
+                    \RecursiveIteratorIterator::LEAVES_ONLY
+                );
+
+                foreach ($files as $file) {
+                    if (!$file->isDir()) {
+                        $filePath = $file->getRealPath();
+                        $relativePath = substr($filePath, strlen($tempDir) + 1);
+                        $zip->addFile($filePath, $repoName . '/' . $relativePath);
+                    }
+                }
+
+                $zip->close();
+                $this->deleteDirectory($tempDir);
+
+                return response()->download($zipPath)->deleteFileAfterSend(true);
+            }
+
+            throw new \Exception('Failed to create ZIP file');
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Error: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    public function uploadProject(Request $request)
+    {
+        $request->validate([
+            'project' => 'required|file|mimes:zip|max:51200' // 50MB max
+        ]);
+
+        try {
+            $file = $request->file('project');
+            $fileName = time() . '_' . $file->getClientOriginalName();
+            $tempDir = storage_path('app/temp/uploaded_' . time());
+            
+            mkdir($tempDir, 0755, true);
+            
+            // Extract ZIP
+            $zip = new ZipArchive();
+            if ($zip->open($file->getRealPath()) === TRUE) {
+                $zip->extractTo($tempDir);
+                $zip->close();
+            } else {
+                throw new \Exception('Failed to extract ZIP file');
+            }
+
+            // Find index.html or main entry point
+            $htmlFiles = $this->findHtmlFiles($tempDir);
+            
+            if (empty($htmlFiles)) {
+                // Check if it's a React project
+                if (file_exists($tempDir . '/package.json')) {
+                    $this->deleteDirectory($tempDir);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'React projects need to be built first. Please run "npm run build" and upload the build folder.'
+                    ], 400);
+                }
+                
+                $this->deleteDirectory($tempDir);
+                throw new \Exception('No HTML files found in the uploaded project');
+            }
+
+            // Use the first HTML file found (prioritize index.html)
+            $indexFile = $this->findIndexHtml($htmlFiles) ?? $htmlFiles[0];
+            $htmlContent = file_get_contents($indexFile);
+
+            // Fix relative paths in HTML
+            $htmlContent = $this->fixRelativePaths($htmlContent, $tempDir, dirname($indexFile));
+
+            // Clean up
+            $this->deleteDirectory($tempDir);
+
+            return response()->json([
+                'success' => true,
+                'html' => $htmlContent
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Upload failed: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    private function findHtmlFiles($dir)
+    {
+        $htmlFiles = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir),
+            \RecursiveIteratorIterator::LEAVES_ONLY
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isFile() && strtolower($file->getExtension()) === 'html') {
+                $htmlFiles[] = $file->getRealPath();
+            }
+        }
+
+        return $htmlFiles;
+    }
+
+    private function findIndexHtml($htmlFiles)
+    {
+        foreach ($htmlFiles as $file) {
+            if (basename($file) === 'index.html') {
+                return $file;
+            }
+        }
+        return null;
+    }
+
+    private function fixRelativePaths($html, $baseDir, $htmlDir)
+    {
+        // This is a basic implementation - you might need to enhance it
+        // to handle all asset types (CSS, JS, images, etc.)
+        return $html;
     }
 
     private function downloadReactProject($code, $projectName)
@@ -151,7 +284,7 @@ class CodeExecutorController extends Controller
 HTML;
         file_put_contents($tempDir . '/public/index.html', $indexHtml);
 
-        // Convert inline React code to proper React component
+        // Convert inline React code to proper React component with IMPROVED extraction
         $appJs = $this->convertToReactComponent($code);
         file_put_contents($tempDir . '/src/App.js', $appJs);
 
@@ -206,15 +339,15 @@ This project was generated by AI App Builder.
 
 In the project directory, you can run:
 
-### `npm install`
+### \`npm install\`
 First, install the dependencies.
 
-### `npm start`
+### \`npm start\`
 Runs the app in development mode.
 Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
 
-### `npm run build`
-Builds the app for production to the `build` folder.
+### \`npm run build\`
+Builds the app for production to the \`build\` folder.
 
 ## Learn More
 
@@ -267,7 +400,7 @@ MD;
 
 This HTML project was generated by AI App Builder.
 
-Simply open `index.html` in your browser to view the application.
+Simply open \`index.html\` in your browser to view the application.
 MD;
         file_put_contents($tempDir . '/README.md', $readme);
 
@@ -300,19 +433,77 @@ MD;
 
     private function convertToReactComponent($code)
     {
-        // Try to extract the App component
-        if (preg_match('/function App\(\)\s*\{[\s\S]*?\}/m', $code, $matches)) {
+        // Remove any ReactDOM.render calls from the code
+        $code = preg_replace('/ReactDOM\.render\([^)]+\)[^;]*;?/s', '', $code);
+        $code = preg_replace('/ReactDOM\.createRoot\([^)]+\)\.render\([^)]+\)[^;]*;?/s', '', $code);
+        
+        // Try to find function App() declaration
+        if (preg_match('/function\s+App\s*\([^)]*\)\s*\{([\s\S]*)\}/m', $code, $matches)) {
+            $functionBody = $matches[1];
+            
+            // Check if it uses React.createElement
+            if (strpos($functionBody, 'React.createElement') !== false) {
+                return "import React from 'react';\n\nfunction App() {\n" . $functionBody . "\n}\n\nexport default App;";
+            }
+            
+            // Check if it uses JSX (has return with tags)
+            if (preg_match('/return\s*\(/s', $functionBody)) {
+                return "import React from 'react';\n\nfunction App() {\n" . $functionBody . "\n}\n\nexport default App;";
+            }
+            
             return "import React from 'react';\n\n" . $matches[0] . "\n\nexport default App;";
         }
+        
+        // Try to find const/let App = () => arrow function
+        if (preg_match('/(const|let|var)\s+App\s*=\s*\([^)]*\)\s*=>\s*\{([\s\S]*)\}/m', $code, $matches)) {
+            return "import React from 'react';\n\n" . $matches[0] . "\n\nexport default App;";
+        }
+        
+        // Try to find arrow function without braces (implicit return)
+        if (preg_match('/(const|let|var)\s+App\s*=\s*\([^)]*\)\s*=>\s*\(/m', $code, $matches)) {
+            return "import React from 'react';\n\n" . $code . ";\n\nexport default App;";
+        }
 
-        // If no App function found, wrap the code
+        // If code contains JSX-like syntax or React.createElement, wrap it
+        if (strpos($code, 'React.createElement') !== false || 
+            preg_match('/<[A-Z]/', $code) || 
+            strpos($code, 'useState') !== false ||
+            strpos($code, 'useEffect') !== false) {
+            
+            // Extract imports if any
+            $imports = '';
+            if (preg_match_all('/import\s+.*?;/s', $code, $importMatches)) {
+                $imports = implode("\n", $importMatches[0]) . "\n";
+                $code = preg_replace('/import\s+.*?;/s', '', $code);
+            }
+            
+            // Clean up the code
+            $code = trim($code);
+            
+            return <<<JS
+import React from 'react';
+$imports
+
+function App() {
+  $code
+}
+
+export default App;
+JS;
+        }
+
+        // Default fallback - create a basic component
         return <<<JS
 import React from 'react';
 
 function App() {
   return (
-    <div className="App">
-      <p>Please modify this component</p>
+    <div className="App" style={{ padding: '20px', fontFamily: 'system-ui' }}>
+      <h1>Generated App</h1>
+      <p>The code structure couldn't be automatically converted. Please check the generated App.js file.</p>
+      <pre style={{ background: '#f5f5f5', padding: '10px', borderRadius: '5px', overflow: 'auto' }}>
+        {`Original code:\n\n$code`}
+      </pre>
     </div>
   );
 }

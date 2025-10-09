@@ -10,6 +10,7 @@ Route::get('/code-executor', [CodeExecutorController::class, 'index'])->name('co
 Route::post('/code-executor/execute', [CodeExecutorController::class, 'execute'])->name('code-executor.execute');
 Route::post('/code-executor/download', [CodeExecutorController::class, 'download'])->name('code-executor.download');
 Route::post('/code-executor/upload-git', [CodeExecutorController::class, 'uploadGitRepo'])->name('code-executor.upload-git');
+Route::post('/code-executor/upload-project', [CodeExecutorController::class, 'uploadProject'])->name('code-executor.upload-project');
 
 // Code Generator Routes
 Route::post('/code-generator/generate', [CodeGeneratorController::class, 'generate'])->name('code-generator.generate');
