@@ -50,7 +50,7 @@
                 </div>
 
                 <div class="flex gap-2 items-center">
-                    <select x-model="codeType"
+                    <select x-model="codeType" @change="updateEditorLanguage"
                         class="px-3 py-2 bg-[#ffeedb] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <option value="react">React</option>
                         <option value="html">HTML</option>
@@ -122,15 +122,14 @@
 
             {{-- Main Content --}}
             <div class="flex flex-1 overflow-hidden">
-                {{-- Code Editor --}}
+                {{-- VS Code Editor --}}
                 <div class="w-1/2 flex flex-col border-r border-gray-700">
                     <div
                         class="p-3 bg-[#ffeedb] border-b border-gray-700 text-sm font-semibold flex justify-between items-center">
                         <span>Code Editor</span>
                         <span x-show="codeDescription" class="text-xs text-gray-400" x-text="codeDescription"></span>
                     </div>
-                    <textarea x-model="code" class="flex-1 p-4 bg-gray-900 text-gray-100 font-mono text-sm resize-none focus:outline-none"
-                        spellcheck="false" placeholder="Write your code here or use AI to generate..." @keydown.ctrl.enter="executeCode"></textarea>
+                    <div id="monaco-editor" style="width: 100%; height: 100%;"></div>
                 </div>
 
                 {{-- Output --}}
@@ -206,8 +205,77 @@
     </div>
 @endsection
 
+@push('styles')
+    <link rel="stylesheet" data-name="vs/editor/editor.main"
+        href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/editor/editor.main.css">
+@endpush
+
 @push('scripts')
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
     <script>
+        require.config({
+            paths: {
+                'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs'
+            }
+        });
+
+        let monacoEditor;
+        let monacoModel;
+
+        require(['vs/editor/editor.main'], function() {
+            monacoEditor = monaco.editor.create(document.getElementById('monaco-editor'), {
+                value: `// Try React code here or use AI to generate!
+function App() {
+  const [count, setCount] = React.useState(0);
+  
+  return (
+    React.createElement('div', { style: { padding: '20px', fontFamily: 'system-ui' } },
+      React.createElement('h1', null, 'Hello from Laravel!'),
+      React.createElement('p', null, 'Count: ', count),
+      React.createElement('button', {
+        onClick: () => setCount(count + 1),
+        style: {
+          padding: '10px 20px',
+          background: '#3b82f6',
+          color: 'white',
+          border: 'none',
+          borderRadius: '6px',
+          cursor: 'pointer'
+        }
+      }, 'Increment')
+    )
+  );
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
+                language: 'javascript',
+                theme: 'vs-dark',
+                automaticLayout: true,
+                minimap: {
+                    enabled: true
+                },
+                scrollBeyondLastLine: false,
+                wordWrap: 'on',
+                formatOnPaste: true,
+                formatOnType: true,
+                suggestOnTriggerCharacters: true,
+                quickSuggestions: {
+                    other: true,
+                    comments: false,
+                    strings: false
+                },
+                parameterHints: {
+                    enabled: true
+                },
+                folding: true,
+                showUnused: true,
+                fontSize: 14,
+                fontFamily: 'Fira Code, Consolas, monospace'
+            });
+
+            monacoModel = monacoEditor.getModel();
+        });
+
         function codeExecutor() {
             return {
                 code: `// Try React code here or use AI to generate!
@@ -254,6 +322,25 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
 
                 init() {
                     this.loadHistoryList();
+                    // Setup keyboard shortcut for running code
+                    document.addEventListener('keydown', (e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                            e.preventDefault();
+                            this.executeCode();
+                        }
+                    });
+                },
+
+                updateEditorLanguage() {
+                    if (monacoEditor) {
+                        const languageMap = {
+                            'react': 'javascript',
+                            'html': 'html',
+                            'javascript': 'javascript',
+                            'vue': 'javascript'
+                        };
+                        monaco.editor.setModelLanguage(monacoModel, languageMap[this.codeType] || 'javascript');
+                    }
                 },
 
                 async loadHistoryList() {
@@ -278,6 +365,12 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                             this.codeDescription = data.data.description;
                             this.aiPrompt = data.data.prompt;
                             this.currentHistoryId = id;
+
+                            if (monacoEditor) {
+                                monacoEditor.setValue(this.code);
+                                this.updateEditorLanguage();
+                            }
+
                             setTimeout(() => this.executeCode(), 300);
                         }
                     } catch (err) {
@@ -377,7 +470,6 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                             const a = document.createElement('a');
                             a.href = url;
 
-                            // Extract repo name from URL
                             const repoName = this.gitRepoUrl.split('/').pop().replace('.git', '');
                             a.download = `${repoName}.zip`;
 
@@ -410,7 +502,6 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                     this.generating = true;
                     this.streamingProgress = true;
                     this.generationError = '';
-                    this.code = '';
 
                     try {
                         const response = await fetch(
@@ -455,6 +546,11 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                                                 this.code = codeData.code;
                                                 this.codeType = codeData.type;
                                                 this.codeDescription = codeData.description;
+
+                                                if (monacoEditor) {
+                                                    monacoEditor.setValue(this.code);
+                                                    this.updateEditorLanguage();
+                                                }
 
                                                 await this.saveStreamedCode(codeData);
                                                 setTimeout(() => this.executeCode(), 500);
@@ -523,6 +619,11 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                     this.error = false;
                     this.errorMessage = '';
 
+                    // Get code from Monaco Editor
+                    if (monacoEditor) {
+                        this.code = monacoEditor.getValue();
+                    }
+
                     try {
                         const response = await fetch('{{ route('code-executor.execute') }}', {
                             method: 'POST',
@@ -553,6 +654,10 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                 },
 
                 async downloadProject() {
+                    if (monacoEditor) {
+                        this.code = monacoEditor.getValue();
+                    }
+
                     if (!this.code.trim()) {
                         alert('No code to download!');
                         return;
