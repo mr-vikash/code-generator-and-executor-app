@@ -22,3 +22,4 @@ Route::get('/code-history', [CodeHistoryController::class, 'index'])->name('code
 Route::get('/code-history/{id}', [CodeHistoryController::class, 'show'])->name('code-history.show');
 Route::delete('/code-history/{id}', [CodeHistoryController::class, 'destroy'])->name('code-history.destroy');
 Route::delete('/code-history', [CodeHistoryController::class, 'clear'])->name('code-history.clear');
+Route::post('/code-executor/import-repo', [CodeExecutorController::class, 'importRepo'])->name('code-executor.import-repo');

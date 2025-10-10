@@ -180,8 +180,10 @@
                     <div>
                         <label class="block text-sm font-semibold mb-2">Or Enter Git Repository URL</label>
                         <input type="text" x-model="gitRepoUrl" placeholder="https://github.com/user/repo"
-                            class="w-full px-3 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <p class="text-xs text-gray-400 mt-1">Enter a public Git repository URL</p>
+                            class="w-full px-3 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            @keydown.enter="importRepoToEditor">
+                        <p class="text-xs text-gray-400 mt-1">Enter a public Git repository URL (or choose action below)
+                        </p>
                     </div>
 
                     <div x-show="uploadError" class="text-red-400 text-sm" x-text="uploadError"></div>
@@ -191,6 +193,10 @@
                 </div>
 
                 <div class="flex gap-2 mt-6">
+                    <button @click="importRepoToEditor" :disabled="uploading || !gitRepoUrl"
+                        class="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors disabled:opacity-50">
+                        Import to Editor
+                    </button>
                     <button @click="uploadGitRepo" :disabled="uploading || !gitRepoUrl"
                         class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50">
                         Download Git Repo
@@ -270,7 +276,10 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                 folding: true,
                 showUnused: true,
                 fontSize: 14,
-                fontFamily: 'Fira Code, Consolas, monospace'
+                fontFamily: 'Fira Code, Consolas, monospace',
+                insertSpaces: true,
+                tabSize: 2,
+                detectIndentation: true
             });
 
             monacoModel = monacoEditor.getModel();
@@ -487,6 +496,58 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                         }
                     } catch (err) {
                         this.uploadError = 'Error: ' + err.message;
+                    } finally {
+                        this.uploading = false;
+                        this.uploadProgress = '';
+                    }
+                },
+
+                async importRepoToEditor() {
+                    if (!this.gitRepoUrl.trim()) {
+                        this.uploadError = 'Please enter a Git repository URL';
+                        return;
+                    }
+
+                    this.uploading = true;
+                    this.uploadError = '';
+                    this.uploadProgress = 'Fetching repository files...';
+
+                    try {
+                        // Fetch repository files
+                        const response = await fetch('{{ route('code-executor.import-repo') }}', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                            },
+                            body: JSON.stringify({
+                                repo_url: this.gitRepoUrl
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            // Update editor with imported code
+                            if (monacoEditor) {
+                                monacoEditor.setValue(data.code);
+                                this.updateEditorLanguage();
+                            }
+                            this.code = data.code;
+                            this.codeType = data.type || 'javascript';
+                            this.codeDescription = `Imported from: ${this.gitRepoUrl.split('/').pop()}`;
+                            this.aiPrompt = `Imported repository: ${this.gitRepoUrl}`;
+
+                            this.showUploadModal = false;
+                            this.uploadProgress = '';
+                            this.uploadError = '';
+
+                            setTimeout(() => this.executeCode(), 500);
+                        } else {
+                            this.uploadError = data.message || 'Failed to import repository';
+                        }
+                    } catch (err) {
+                        this.uploadError = 'Import error: ' + err.message;
                     } finally {
                         this.uploading = false;
                         this.uploadProgress = '';

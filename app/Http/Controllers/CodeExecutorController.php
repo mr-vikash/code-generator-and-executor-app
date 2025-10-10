@@ -643,4 +643,69 @@ HTML;
 </html>
 HTML;
     }
+
+
+    public function importRepo(Request $request)
+{
+    $request->validate([
+        'repo_url' => 'required|url'
+    ]);
+
+    $repoUrl = $request->input('repo_url');
+
+    try {
+        $repoUrl = trim($repoUrl);
+        preg_match('/\/([^\/]+?)(?:\.git)?$/', $repoUrl, $matches);
+        $repoName = $matches[1] ?? 'repo';
+        $repoName = preg_replace('/[^a-zA-Z0-9-_]/', '', $repoName);
+        
+        $tempDir = storage_path('app/temp/git_' . $repoName . '_' . time());
+        
+        $command = "git clone --depth 1 " . escapeshellarg($repoUrl) . " " . escapeshellarg($tempDir) . " 2>&1";
+        exec($command, $output, $returnCode);
+        
+        if ($returnCode !== 0) {
+            throw new \Exception('Failed to clone repository: ' . implode("\n", $output));
+        }
+
+        $this->deleteDirectory($tempDir . '/.git');
+
+        // Find and read main code file
+        $htmlFiles = $this->findHtmlFiles($tempDir);
+        $codeFile = null;
+        $codeType = 'javascript';
+        $code = '';
+
+        if (!empty($htmlFiles)) {
+            $codeFile = $this->findIndexHtml($htmlFiles) ?? $htmlFiles[0];
+            $code = file_get_contents($codeFile);
+            $codeType = 'html';
+        } else {
+            // Look for JS/JSX files
+            $jsFiles = glob($tempDir . '/**/*.{js,jsx}', GLOB_BRACE);
+            if (!empty($jsFiles)) {
+                $codeFile = $jsFiles[0];
+                $code = file_get_contents($codeFile);
+                $codeType = 'javascript';
+            }
+        }
+
+        $this->deleteDirectory($tempDir);
+
+        if (empty($code)) {
+            throw new \Exception('No readable code files found in repository');
+        }
+
+        return response()->json([
+            'success' => true,
+            'code' => $code,
+            'type' => $codeType
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Error: ' . $e->getMessage()
+        ], 500);
+    }
+}
 }
