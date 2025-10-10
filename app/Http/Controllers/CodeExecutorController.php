@@ -645,7 +645,7 @@ HTML;
     }
 
 
-    public function importRepo(Request $request)
+   public function importRepo(Request $request)
 {
     $request->validate([
         'repo_url' => 'required|url'
@@ -670,36 +670,18 @@ HTML;
 
         $this->deleteDirectory($tempDir . '/.git');
 
-        // Find and read main code file
-        $htmlFiles = $this->findHtmlFiles($tempDir);
-        $codeFile = null;
-        $codeType = 'javascript';
-        $code = '';
-
-        if (!empty($htmlFiles)) {
-            $codeFile = $this->findIndexHtml($htmlFiles) ?? $htmlFiles[0];
-            $code = file_get_contents($codeFile);
-            $codeType = 'html';
-        } else {
-            // Look for JS/JSX files
-            $jsFiles = glob($tempDir . '/**/*.{js,jsx}', GLOB_BRACE);
-            if (!empty($jsFiles)) {
-                $codeFile = $jsFiles[0];
-                $code = file_get_contents($codeFile);
-                $codeType = 'javascript';
-            }
-        }
+        // Detect project technology
+        $projectInfo = $this->detectProjectType($tempDir);
+        $codeData = $this->extractProjectCode($tempDir, $projectInfo);
 
         $this->deleteDirectory($tempDir);
 
-        if (empty($code)) {
-            throw new \Exception('No readable code files found in repository');
-        }
-
         return response()->json([
             'success' => true,
-            'code' => $code,
-            'type' => $codeType
+            'code' => $codeData['code'],
+            'type' => $codeData['type'],
+            'technology' => $projectInfo['technology'],
+            'projectInfo' => $projectInfo['description']
         ]);
     } catch (\Exception $e) {
         return response()->json([
@@ -707,5 +689,143 @@ HTML;
             'message' => 'Error: ' . $e->getMessage()
         ], 500);
     }
+}
+
+private function detectProjectType($dir)
+{
+    $technology = 'unknown';
+    $description = '';
+    $hasPackageJson = file_exists($dir . '/package.json');
+    $hasPySetup = file_exists($dir . '/setup.py') || file_exists($dir . '/requirements.txt');
+    $hasGemfile = file_exists($dir . '/Gemfile');
+    $hasGoMod = file_exists($dir . '/go.mod');
+    $hasCargo = file_exists($dir . '/Cargo.toml');
+    $hasPom = file_exists($dir . '/pom.xml');
+    $hasGradle = file_exists($dir . '/build.gradle') || file_exists($dir . '/build.gradle.kts');
+    $hasDockerfile = file_exists($dir . '/Dockerfile');
+
+    if ($hasPackageJson) {
+        $packageJson = json_decode(file_get_contents($dir . '/package.json'), true);
+        $deps = array_merge($packageJson['dependencies'] ?? [], $packageJson['devDependencies'] ?? []);
+        
+        if (isset($deps['react']) || isset($deps['react-dom'])) {
+            $technology = 'React';
+            $description = 'React.js application';
+        } elseif (isset($deps['vue'])) {
+            $technology = 'Vue.js';
+            $description = 'Vue.js application';
+        } elseif (isset($deps['angular'])) {
+            $technology = 'Angular';
+            $description = 'Angular application';
+        } elseif (isset($deps['next'])) {
+            $technology = 'Next.js';
+            $description = 'Next.js application';
+        } elseif (isset($deps['nuxt'])) {
+            $technology = 'Nuxt.js';
+            $description = 'Nuxt.js application';
+        } elseif (isset($deps['svelte'])) {
+            $technology = 'Svelte';
+            $description = 'Svelte application';
+        } else {
+            $technology = 'Node.js';
+            $description = 'Node.js application';
+        }
+    } elseif ($hasPySetup || file_exists($dir . '/main.py') || file_exists($dir . '/app.py')) {
+        $technology = 'Python';
+        $description = 'Python application';
+    } elseif ($hasGemfile) {
+        $technology = 'Ruby';
+        $description = 'Ruby on Rails application';
+    } elseif ($hasGoMod || file_exists($dir . '/main.go')) {
+        $technology = 'Go';
+        $description = 'Go application';
+    } elseif ($hasCargo) {
+        $technology = 'Rust';
+        $description = 'Rust application';
+    } elseif ($hasPom) {
+        $technology = 'Java (Maven)';
+        $description = 'Java Maven project';
+    } elseif ($hasGradle) {
+        $technology = 'Java (Gradle)';
+        $description = 'Java Gradle project';
+    } elseif (file_exists($dir . '/index.html') || file_exists($dir . '/index.php')) {
+        $technology = 'HTML/Static';
+        $description = 'Static HTML/PHP project';
+    }
+
+    return [
+        'technology' => $technology,
+        'description' => $description,
+        'hasPackageJson' => $hasPackageJson,
+        'hasPython' => $hasPySetup,
+        'hasRuby' => $hasGemfile,
+        'hasGo' => $hasGoMod,
+        'hasRust' => $hasCargo,
+        'hasJava' => $hasPom || $hasGradle,
+        'hasDocker' => $hasDockerfile
+    ];
+}
+
+private function extractProjectCode($dir, $projectInfo)
+{
+    $code = '';
+    $type = 'javascript';
+
+    // Priority: index.html > App.js/jsx > main.py > main.go > index.php > README
+    if (file_exists($dir . '/index.html')) {
+        $code = file_get_contents($dir . '/index.html');
+        $type = 'html';
+    } elseif (file_exists($dir . '/public/index.html')) {
+        $code = file_get_contents($dir . '/public/index.html');
+        $type = 'html';
+    } elseif (file_exists($dir . '/src/App.jsx')) {
+        $code = file_get_contents($dir . '/src/App.jsx');
+        $type = 'react';
+    } elseif (file_exists($dir . '/src/App.js')) {
+        $code = file_get_contents($dir . '/src/App.js');
+        $type = 'react';
+    } elseif (file_exists($dir . '/src/components/App.vue')) {
+        $code = file_get_contents($dir . '/src/components/App.vue');
+        $type = 'vue';
+    } elseif (file_exists($dir . '/src/App.vue')) {
+        $code = file_get_contents($dir . '/src/App.vue');
+        $type = 'vue';
+    } elseif (file_exists($dir . '/app.py')) {
+        $code = file_get_contents($dir . '/app.py');
+        $type = 'python';
+    } elseif (file_exists($dir . '/main.py')) {
+        $code = file_get_contents($dir . '/main.py');
+        $type = 'python';
+    } elseif (file_exists($dir . '/main.go')) {
+        $code = file_get_contents($dir . '/main.go');
+        $type = 'go';
+    } elseif (file_exists($dir . '/index.php')) {
+        $code = file_get_contents($dir . '/index.php');
+        $type = 'php';
+    } else {
+        // Try to find any main file
+        $mainFiles = array_merge(
+            glob($dir . '/src/*.{js,jsx,ts,tsx}', GLOB_BRACE) ?: [],
+            glob($dir . '/*.{js,jsx,ts,tsx,py,go,php}', GLOB_BRACE) ?: []
+        );
+
+        if (!empty($mainFiles)) {
+            $code = file_get_contents($mainFiles[0]);
+            $ext = pathinfo($mainFiles[0], PATHINFO_EXTENSION);
+            $type = $ext;
+        } else {
+            // Fallback to README
+            if (file_exists($dir . '/README.md')) {
+                $code = file_get_contents($dir . '/README.md');
+            } else {
+                $code = "// Project imported successfully\n// No main code file found\n// Technology: " . $projectInfo['technology'];
+            }
+        }
+    }
+
+    return [
+        'code' => $code,
+        'type' => $type
+    ];
 }
 }
