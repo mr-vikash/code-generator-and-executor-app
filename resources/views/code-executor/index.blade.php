@@ -528,19 +528,32 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                         const data = await response.json();
 
                         if (data.success) {
-                            // Update editor with imported code
+                            // Format file structure display
+                            const fileStructure = this.formatFileStructure(data.fileStructure);
+                            const fullCode = fileStructure + '\n\n' + data.code;
+
+                            // Update editor with file structure + code
                             if (monacoEditor) {
-                                monacoEditor.setValue(data.code);
+                                monacoEditor.setValue(fullCode);
                                 this.updateEditorLanguage();
                             }
-                            this.code = data.code;
+                            this.code = fullCode;
                             this.codeType = data.type || 'javascript';
-                            this.codeDescription = `Imported from: ${this.gitRepoUrl.split('/').pop()}`;
-                            this.aiPrompt = `Imported repository: ${this.gitRepoUrl}`;
+                            this.codeDescription = `${data.technology} - ${data.projectInfo}`;
+                            this.aiPrompt = `Imported ${data.technology} repository: ${this.gitRepoUrl}`;
 
                             this.showUploadModal = false;
                             this.uploadProgress = '';
                             this.uploadError = '';
+
+                            // Show project info
+                            if (data.projectInfo) {
+                                console.log('Project Info:', data.projectInfo);
+                                this.uploadProgress = `Loaded ${data.technology} project - Files: ${data.fileCount}`;
+                                setTimeout(() => {
+                                    this.uploadProgress = '';
+                                }, 3000);
+                            }
 
                             setTimeout(() => this.executeCode(), 500);
                         } else {
@@ -550,8 +563,41 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                         this.uploadError = 'Import error: ' + err.message;
                     } finally {
                         this.uploading = false;
-                        this.uploadProgress = '';
                     }
+                },
+
+                formatFileStructure(tree) {
+                    if (!tree) return '';
+                    let result = '=== PROJECT STRUCTURE ===\n\n';
+
+                    const buildTree = (obj, prefix = '', isLast = true) => {
+                        const lines = [];
+                        const entries = Object.entries(obj).sort((a, b) => {
+                            // Directories first, then files
+                            const aIsDir = typeof a[1] === 'object';
+                            const bIsDir = typeof b[1] === 'object';
+                            if (aIsDir !== bIsDir) return bIsDir - aIsDir;
+                            return a[0].localeCompare(b[0]);
+                        });
+
+                        entries.forEach((entry, index) => {
+                            const [name, value] = entry;
+                            const isLastItem = index === entries.length - 1;
+                            const connector = isLastItem ? '└── ' : '├── ';
+                            const continuation = isLastItem ? '    ' : '│   ';
+
+                            if (typeof value === 'object') {
+                                lines.push(prefix + connector + '📁 ' + name + '/');
+                                lines.push(...buildTree(value, prefix + continuation, isLastItem));
+                            } else {
+                                lines.push(prefix + connector + '📄 ' + name);
+                            }
+                        });
+                        return lines;
+                    };
+
+                    result += buildTree(tree).join('\n');
+                    return result;
                 },
 
                 async generateCodeStream() {
@@ -563,6 +609,7 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                     this.generating = true;
                     this.streamingProgress = true;
                     this.generationError = '';
+                    let streamedCode = '';
 
                     try {
                         const response = await fetch(
@@ -577,6 +624,7 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                         const decoder = new TextDecoder();
                         let buffer = '';
                         let fullResponse = '';
+                        let codeStarted = false;
 
                         while (true) {
                             const {
@@ -599,6 +647,29 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
                                         if (data.type === 'content_block_delta') {
                                             const text = data.delta?.text || '';
                                             fullResponse += text;
+
+                                            // Try to extract JSON as it streams
+                                            if (!codeStarted && fullResponse.includes('{')) {
+                                                codeStarted = true;
+                                            }
+
+                                            if (codeStarted) {
+                                                try {
+                                                    const jsonMatch = fullResponse.match(/\{[\s\S]*"code"[\s\S]*\}/);
+                                                    if (jsonMatch) {
+                                                        const parsed = JSON.parse(jsonMatch[0]);
+                                                        streamedCode = parsed.code || '';
+
+                                                        // Update editor live
+                                                        if (monacoEditor && streamedCode) {
+                                                            monacoEditor.setValue(streamedCode);
+                                                            this.updateEditorLanguage();
+                                                        }
+                                                    }
+                                                } catch (e) {
+                                                    // Continue streaming until valid JSON
+                                                }
+                                            }
                                         }
 
                                         if (data.type === 'message_stop') {
@@ -633,15 +704,57 @@ ReactDOM.render(React.createElement(App), document.getElementById('root'));`,
 
                 parseStreamedCode(text) {
                     try {
-                        const jsonMatch = text.match(/\{[\s\S]*"code"[\s\S]*\}/);
-                        if (jsonMatch) {
-                            const parsed = JSON.parse(jsonMatch[0]);
-                            return {
-                                code: parsed.code || '',
-                                type: parsed.type || 'react',
-                                description: parsed.description || 'Generated code',
-                                libraries: parsed.libraries || []
-                            };
+                        // Try to find the last complete JSON object
+                        let jsonMatch = null;
+                        let lastIndex = -1;
+                        let braceCount = 0;
+                        let inString = false;
+                        let escaped = false;
+                        let startIndex = -1;
+
+                        for (let i = 0; i < text.length; i++) {
+                            const char = text[i];
+
+                            if (escaped) {
+                                escaped = false;
+                                continue;
+                            }
+
+                            if (char === '\\') {
+                                escaped = true;
+                                continue;
+                            }
+
+                            if (char === '"') {
+                                inString = !inString;
+                                continue;
+                            }
+
+                            if (!inString) {
+                                if (char === '{') {
+                                    if (braceCount === 0) startIndex = i;
+                                    braceCount++;
+                                } else if (char === '}') {
+                                    braceCount--;
+                                    if (braceCount === 0 && startIndex !== -1) {
+                                        lastIndex = i;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (startIndex !== -1 && lastIndex !== -1 && lastIndex > startIndex) {
+                            const jsonStr = text.substring(startIndex, lastIndex + 1);
+                            const parsed = JSON.parse(jsonStr);
+
+                            if (parsed.code) {
+                                return {
+                                    code: parsed.code,
+                                    type: parsed.type || 'javascript',
+                                    description: parsed.description || 'Generated code',
+                                    libraries: parsed.libraries || []
+                                };
+                            }
                         }
                     } catch (e) {
                         console.error('Parse error:', e);

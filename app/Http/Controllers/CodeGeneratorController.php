@@ -87,6 +87,7 @@ class CodeGeneratorController extends Controller
                         ]
                     ]),
                     CURLOPT_WRITEFUNCTION => function($curl, $data) {
+                        // Parse and re-stream the data properly
                         echo $data;
                         ob_flush();
                         flush();
@@ -106,6 +107,7 @@ class CodeGeneratorController extends Controller
             'Content-Type' => 'text/event-stream',
             'Cache-Control' => 'no-cache',
             'X-Accel-Buffering' => 'no',
+            'Connection' => 'keep-alive',
         ]);
     }
 
@@ -175,33 +177,29 @@ class CodeGeneratorController extends Controller
     private function getSystemPrompt()
     {
         return <<<'PROMPT'
-You are a code generation assistant. Respond with ONLY a JSON object in this exact format:
+You are a code generation assistant. Respond with ONLY a valid JSON object in this exact format, no markdown, no code blocks, pure JSON:
 
 {
   "type": "react",
-  "code": "complete executable code here",
+  "code": "complete executable code here with proper indentation and formatting",
   "libraries": [],
   "description": "what this code does"
 }
 
 Rules:
-1. ONLY output the JSON, nothing else
-2. No markdown code blocks, no explanations
-3. The "type" must be: "react", "html", "javascript", or "vue"
-4. For React: Include complete component with ReactDOM.render() at the end
-   Example: function App() { return <div>Hello</div>; } ReactDOM.render(<App />, document.getElementById('root'));
-5. For HTML: Include full <!DOCTYPE html> structure
-6. For JavaScript: Include executable vanilla JS
-7. Escape quotes properly in JSON
-8. Make the code functional and complete
+1. Output ONLY valid JSON, nothing else
+2. NO markdown code blocks
+3. NO explanations before or after
+4. The "type" must be: "react", "html", "javascript", or "vue"
+5. Ensure code has proper indentation (2 spaces per level)
+6. For React: Include complete component with ReactDOM.render() at the end
+7. For HTML: Include full <!DOCTYPE html> structure
+8. For JavaScript: Include executable vanilla JS
+9. Escape all quotes in the JSON code value as \"
+10. Make the code functional and complete
 
-Example React response:
-{
-  "type": "react",
-  "code": "function App() { const [count, setCount] = React.useState(0); return <div style={{padding: '20px'}}><h1>Counter: {count}</h1><button onClick={() => setCount(count + 1)}>Increment</button></div>; } ReactDOM.render(<App />, document.getElementById('root'));",
-  "libraries": [],
-  "description": "A simple counter app"
-}
+Example output (valid JSON only):
+{"type":"react","code":"function App() {\n  const [count, setCount] = React.useState(0);\n  return React.createElement('div', { style: { padding: '20px' } },\n    React.createElement('h1', null, 'Counter: ', count),\n    React.createElement('button', {\n      onClick: () => setCount(count + 1),\n      style: { padding: '10px 20px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }\n    }, 'Increment')\n  );\n}\n\nReactDOM.render(React.createElement(App), document.getElementById('root'));","libraries":[],"description":"A simple counter app"}
 PROMPT;
     }
 
@@ -250,9 +248,15 @@ PROMPT;
 
     private function validateCodeData($data)
     {
+        // Decode the code string if it's escaped
+        $code = $data['code'] ?? '';
+        if (is_string($code)) {
+            $code = stripslashes($code);
+        }
+
         return [
             'type' => $data['type'] ?? 'javascript',
-            'code' => $data['code'] ?? '',
+            'code' => $code,
             'libraries' => $data['libraries'] ?? [],
             'description' => $data['description'] ?? 'Generated code'
         ];
